@@ -1,4 +1,4 @@
-/**
+/*
  * MCL - Minimal TCL-like interpreter with small memory footprint.
  *
  * Copyright 2023 Matthew T. Bucknall
@@ -22,6 +22,11 @@
  * IN THE SOFTWARE.
  */
 
+/**
+ * @file mcl.h
+ * @brief MCL - Minimal TCL-like interpreter public API.
+ */
+
 #ifndef MCL_H
 #define MCL_H
 
@@ -33,6 +38,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
 
 // ======== PUBLIC CONSTANTS ========
 
@@ -60,11 +66,6 @@ mcl_result_t mcl_init(mcl_t* mcl, mcl_heap_type_t* heap, size_t n_heap_entries,
               void* user_data);
 
 void* mcl_user_data(const mcl_t* ctx);
-
-
-// ======== STRING ========
-
-
 
 
 // ======== PRIVATE ========

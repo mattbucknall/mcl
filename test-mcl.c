@@ -1,4 +1,4 @@
-/**
+/*
  * MCL - Minimal TCL-like interpreter with small memory footprint.
  *
  * Copyright 2023 Matthew T. Bucknall
@@ -123,8 +123,8 @@ static void setup(void) {
     m_user_data = 0;
 
     for (size_t i = 0; i < TEST_DUMMY_DATA_SIZE; i++) {
-        m_dummy_data[i] = ("012345679ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-        [ut_random() % 36];
+        m_dummy_data[i] = ("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+                [ut_random() % 36];
     }
 
     UT_ASSERT(mcl_init(&m_ctx, m_heap, TEST_HEAP_SIZE,
@@ -198,13 +198,14 @@ static void test_stack_height(void) {
     for (int i = 0; i < 100; i++) {
         setup();
 
+        uint32_t initial_height = stack_height(&m_ctx);
         uint32_t n = ut_random() % stack_space(&m_ctx);
 
         for (uint32_t j = 0; j < n; j++) {
             stack_push(&m_ctx, NULL);
         }
 
-        UT_ASSERT(stack_height(&m_ctx) == n);
+        UT_ASSERT((stack_height(&m_ctx) - initial_height) == n);
 
         teardown();
     }
@@ -215,6 +216,7 @@ static void test_stack_contains(void) {
     for (int i = 0; i < 100; i++) {
         setup();
 
+        mcl_heap_type_t* initial_stack_ptr = m_ctx.stack_ptr;
         uint32_t space = stack_space(&m_ctx);
         uint32_t n = ut_random() % space;
 
@@ -223,7 +225,7 @@ static void test_stack_contains(void) {
         }
 
         for (uint32_t j = 1; j <= space; j++) {
-            mcl_heap_type_t* ptr = m_ctx.stack_end - j;
+            mcl_heap_type_t* ptr = initial_stack_ptr - j;
             UT_ASSERT(stack_contains(&m_ctx, ptr) == (j <= n));
         }
 
@@ -249,8 +251,7 @@ static void test_stack_push_pop(void) {
     }
 
     for (uintptr_t i = 0; i < space; i++) {
-        UT_ASSERT(m_ctx.stack_ptr[0] == (void*) (space - i - 1));
-        stack_pop(&m_ctx);
+        UT_ASSERT(stack_pop(&m_ctx) == (void*) (space - i - 1));
     }
 
     teardown();
@@ -262,13 +263,14 @@ static void test_stack_pop_n(void) {
 
     for (int i = 0; i < 100; i++) {
         uint32_t n = ut_random() % stack_space(&m_ctx);
+        size_t initial_height = stack_height(&m_ctx);
 
         for (uint32_t j = 0; j < n; j++) {
             stack_push(&m_ctx, NULL);
         }
 
         stack_pop_n(&m_ctx, n);
-        UT_ASSERT(stack_height(&m_ctx) == 0);
+        UT_ASSERT(stack_height(&m_ctx) == initial_height);
     }
 
     teardown();
@@ -421,53 +423,6 @@ static void test_heap_free(void) {
 }
 
 
-// ======== EXCEPTION HANDLING TESTS ========
-
-static void test_except_helper_no_throw(mcl_t* ctx) {
-    (void) ctx;
-
-    uint32_t* data = mcl_user_data(&m_ctx);
-    *data = 1;
-}
-
-
-static void test_except_no_throw(void) {
-    setup();
-
-    uint32_t* data = mcl_user_data(&m_ctx);
-
-    UT_ASSERT(except_try(&m_ctx, test_except_helper_no_throw) ==
-            MCL_RESULT_OK);
-
-    UT_ASSERT(*data == 1);
-
-    teardown();
-}
-
-
-static void test_except_helper_throw_out_of_memory(mcl_t* ctx) {
-    stack_push(&m_ctx, NULL);
-    except_throw(&m_ctx, MCL_RESULT_OUT_OF_MEMORY);
-}
-
-
-static void test_except_throw_out_of_memory(void) {
-    size_t height;
-
-    setup();
-
-    height = stack_height(&m_ctx);
-
-    UT_ASSERT(except_try(&m_ctx,
-                         test_except_helper_throw_out_of_memory) ==
-                         MCL_RESULT_OUT_OF_MEMORY);
-
-    UT_ASSERT(stack_height(&m_ctx) == height);
-
-    teardown();
-}
-
-
 // ======== DATA PACKING TESTS ========
 
 static void test_pack_unpack_u16(void) {
@@ -529,6 +484,317 @@ static void test_string_ref_unref(void) {
 }
 
 
+static void test_string_grow(void) {
+    uint16_t len;
+
+    setup();
+
+    len = 0;
+
+    stack_push(&m_ctx, string_alloc(&m_ctx, len));
+    UT_ASSERT(string_len(m_ctx.stack_ptr[0]) == len);
+
+    do {
+        len++;
+        string_grow(&m_ctx, m_ctx.stack_ptr[0], len);
+        UT_ASSERT(string_len(m_ctx.stack_ptr[0]) == len);
+        UT_ASSERT(string_chars(m_ctx.stack_ptr[0])[len] == '\0');
+    } while(len < 100);
+
+    teardown();
+}
+
+
+static void test_string_shrink(void) {
+    uint16_t len;
+
+    setup();
+
+    len = 100;
+
+    stack_push(&m_ctx, string_alloc(&m_ctx, len));
+    UT_ASSERT(string_len(m_ctx.stack_ptr[0]) == len);
+    memcpy(string_chars(m_ctx.stack_ptr[0]), m_dummy_data, len);
+
+    do {
+        len--;
+        string_shrink(&m_ctx, m_ctx.stack_ptr[0], len);
+        UT_ASSERT(string_len(m_ctx.stack_ptr[0]) == len);
+        UT_ASSERT(string_chars(m_ctx.stack_ptr[0])[len] == '\0');
+    } while(len > 0);
+
+    teardown();
+}
+
+
+static void test_string_new_with_len(void) {
+    for (int i = 0; i < 100; i++) {
+        setup();
+
+        uint16_t len;
+        mcl_string_t* str;
+
+        len = ut_random() % TEST_DUMMY_DATA_SIZE;
+        str = string_new_with_len(&m_ctx, m_dummy_data, len);
+
+        UT_ASSERT(string_len(str) == len);
+        UT_ASSERT(memcmp(string_chars(str), m_dummy_data, len) == 0);
+        UT_ASSERT(string_chars(str)[len] == '\0');
+
+        teardown();
+    }
+}
+
+
+static void test_string_new(void) {
+    for (int i = 0; i < 100; i++) {
+        setup();
+
+        char content[TEST_DUMMY_DATA_SIZE + 1];
+        uint16_t len;
+        mcl_string_t* str;
+
+        len = ut_random() % TEST_DUMMY_DATA_SIZE;
+        memcpy(content, m_dummy_data, len);
+        content[len] = '\0';
+
+        str = string_new(&m_ctx, content);
+
+        UT_ASSERT(string_len(str) == len);
+        UT_ASSERT(memcmp(string_chars(str), m_dummy_data, len) == 0);
+        UT_ASSERT(string_chars(str)[len] == '\0');
+
+        teardown();
+    }
+}
+
+
+static void test_string_compare_equal_length(void) {
+    setup();
+
+    uint8_t* str[2];
+
+    str[0] = string_new_with_len(&m_ctx, "1234", 4);
+    str[1] = string_new_with_len(&m_ctx, "5678", 4);
+
+    UT_ASSERT(string_compare(str[0], str[1]) < 0);
+    UT_ASSERT(string_compare(str[0], str[0]) == 0);
+    UT_ASSERT(string_compare(str[1], str[0]) > 0);
+
+    teardown();
+}
+
+
+static void test_string_compare_empty(void) {
+    setup();
+
+    uint8_t* str[2];
+
+    str[0] = string_new_with_len(&m_ctx, NULL, 0);
+    str[1] = string_new_with_len(&m_ctx, NULL, 0);
+
+    UT_ASSERT(string_compare(str[0], str[1]) == 0);
+
+    teardown();
+}
+
+
+static void test_string_compare_something_to_nothing(void) {
+    setup();
+
+    uint8_t* str[2];
+
+    str[0] = string_new_with_len(&m_ctx, "abcd", 4);
+    str[1] = string_new_with_len(&m_ctx, NULL, 0);
+
+    UT_ASSERT(string_compare(str[0], str[1]) > 0);
+    UT_ASSERT(string_compare(str[1], str[0]) < 0);
+
+    teardown();
+}
+
+
+static void test_string_compare_different_lengths(void) {
+    setup();
+
+    uint8_t* str[2];
+
+    str[0] = string_new_with_len(&m_ctx, "abcd", 4);
+    str[1] = string_new_with_len(&m_ctx, "abcde", 5);
+
+    UT_ASSERT(string_compare(str[0], str[1]) < 0);
+    UT_ASSERT(string_compare(str[1], str[0]) > 0);
+
+    teardown();
+}
+
+
+// ======== EXCEPTION HANDLING TESTS ========
+
+static void test_except_helper_no_throw(mcl_t* ctx) {
+    (void) ctx;
+
+    uint32_t* data = mcl_user_data(&m_ctx);
+    *data = 1;
+}
+
+
+static void test_except_no_throw(void) {
+    setup();
+
+    uint32_t* data = mcl_user_data(&m_ctx);
+
+    UT_ASSERT(except_try(&m_ctx, test_except_helper_no_throw) ==
+              MCL_RESULT_OK);
+
+    UT_ASSERT(*data == 1);
+
+    teardown();
+}
+
+
+static void test_except_helper_throw_out_of_memory(mcl_t* ctx) {
+    (void) ctx;
+
+    stack_push(&m_ctx, NULL);
+    except_throw(&m_ctx, MCL_RESULT_OUT_OF_MEMORY);
+}
+
+
+static void test_except_throw_out_of_memory(void) {
+    size_t height;
+
+    setup();
+
+    height = stack_height(&m_ctx);
+
+    UT_ASSERT(except_try(&m_ctx,
+                         test_except_helper_throw_out_of_memory) ==
+              MCL_RESULT_OUT_OF_MEMORY);
+
+    UT_ASSERT(stack_height(&m_ctx) == height);
+
+    teardown();
+}
+
+
+static void test_except_helper_throw_unwind(mcl_t* ctx) {
+    for (int i = 0; i < 10; i++) {
+        stack_push(ctx, string_new_with_len(ctx,
+                                            m_dummy_data, 8));
+    }
+
+    except_throw(ctx, MCL_RESULT_OUT_OF_MEMORY);
+}
+
+
+static void test_except_throw_unwind(void) {
+    size_t space;
+
+    setup();
+
+    space = heap_space(&m_ctx);
+    except_try(&m_ctx, test_except_helper_throw_unwind);
+    UT_ASSERT(heap_space(&m_ctx) == space);
+
+    teardown();
+}
+
+
+static void test_except_helper_throw_no_unwind(mcl_t* ctx) {
+    for (int i = 0; i < 10; i++) {
+        stack_push(ctx, string_new_with_len(ctx,
+                                            m_dummy_data, 8));
+    }
+
+    except_throw(ctx, MCL_RESULT_OUT_OF_MEMORY);
+}
+
+
+static void test_except_throw_no_unwind(void) {
+    size_t space;
+
+    setup();
+
+    space = heap_space(&m_ctx);
+    except_try(&m_ctx, test_except_helper_throw_unwind);
+    UT_ASSERT(heap_space(&m_ctx) == space);
+
+    teardown();
+}
+
+
+// ======== FRAME PRIMITIVE TESTS ========
+
+static void test_frame_push_pop(void) {
+    setup();
+
+    size_t space = heap_space(&m_ctx);
+    mcl_heap_type_t* frame_ptr = m_ctx.frame_ptr;
+    mcl_heap_type_t* stack_ptr = m_ctx.stack_ptr;
+
+    frame_push(&m_ctx);
+    UT_ASSERT(m_ctx.frame_ptr < frame_ptr);
+
+    for (int i = 0; i < 10; i++) {
+        stack_push(&m_ctx, NULL);
+    }
+
+    UT_ASSERT(m_ctx.stack_ptr < stack_ptr);
+
+    frame_pop(&m_ctx);
+    UT_ASSERT(m_ctx.stack_ptr == stack_ptr);
+    UT_ASSERT(m_ctx.frame_ptr == frame_ptr);
+    UT_ASSERT(heap_space(&m_ctx) == space);
+
+    teardown();
+}
+
+
+static void test_frame_seek_from_top(void) {
+    setup();
+
+    mcl_heap_type_t* frames[5];
+
+    for (int i = 0; i < 5; i++) {
+        frames[i] = m_ctx.frame_ptr;
+        frame_push(&m_ctx);
+    }
+
+    frame_pop(&m_ctx);
+
+    for (int i = 0; i < 5; i++) {
+        UT_ASSERT(frame_seek(&m_ctx, 4 - i) == frames[i]);
+    }
+
+    UT_ASSERT(frame_seek(&m_ctx, 5 + MCL_CTX_N_INITIAL_FRAMES)
+            == NULL);
+
+    teardown();
+}
+
+
+static void test_frame_seek_from_base(void) {
+    setup();
+
+    mcl_heap_type_t* frames[5];
+
+    for (int i = 0; i < 5; i++) {
+        frames[i] = m_ctx.frame_ptr;
+        frame_push(&m_ctx);
+    }
+
+    frame_pop(&m_ctx);
+
+    for (int i = 0; i < 5; i++) {
+        UT_ASSERT(frame_seek(&m_ctx, -i - MCL_CTX_N_INITIAL_FRAMES)
+                == frames[i]);
+    }
+
+    teardown();
+}
+
+
 // ======== TEST RUNNER ========
 
 int main(int argc, char* argv[]) {
@@ -554,13 +820,27 @@ int main(int argc, char* argv[]) {
     test_heap_shrink();
     test_heap_free();
 
-    test_except_no_throw();
-    test_except_throw_out_of_memory();
-
     test_pack_unpack_u16();
 
     test_string_alloc();
     test_string_ref_unref();
+    test_string_grow();
+    test_string_shrink();
+    test_string_new_with_len();
+    test_string_new();
+    test_string_compare_equal_length();
+    test_string_compare_empty();
+    test_string_compare_something_to_nothing();
+    test_string_compare_different_lengths();
+
+    test_except_no_throw();
+    test_except_throw_out_of_memory();
+    test_except_throw_unwind();
+    test_except_throw_no_unwind();
+
+    test_frame_push_pop();
+    test_frame_seek_from_top();
+    test_frame_seek_from_base();
 
     UT_ASSERT(m_setup_count == m_teardown_count);
 
